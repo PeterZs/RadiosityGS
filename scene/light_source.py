@@ -59,16 +59,16 @@ class LightModel:
         self._intensity = data["intensity"]
         self.optimizer.load_state_dict(data["optimizer"])
     
-    def create_from_env_map(self, env_map = None, init_intensity = None):
+    def create_from_env_map(self, env_map = None, init_intensity = None, **kwargs):
         if env_map is None:
             env_map = torch.ones((3, 128, 256), dtype=torch.float, device="cuda")
-            sample_dict = sample_env_map(env_map, num_samples=16, radius=1000)
+            sample_dict = sample_env_map(env_map, num_samples=16, radius=1000, **kwargs)
 
             self._xyz = sample_dict['means3D']
             self._intensity = nn.Parameter((torch.ones_like(sample_dict['emissions'][:, None, :]) * init_intensity).detach().clone().requires_grad_(True))
         else:
             env_map = torch.nn.functional.interpolate(env_map[None], (16, 32), mode='bilinear', align_corners=False)[0]
-            sample_dict = sample_env_map(env_map, num_samples=16, radius=1000)
+            sample_dict = sample_env_map(env_map, num_samples=16, radius=1000, **kwargs)
 
             self._xyz = sample_dict['means3D']
             self._intensity = nn.Parameter(RGB2SH(sample_dict['emissions'][:, None, :]).detach().clone().requires_grad_(True))

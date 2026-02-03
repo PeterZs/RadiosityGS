@@ -130,11 +130,13 @@ class GaussianExtractor(object):
         self.clean()
 
     @torch.no_grad()
-    def clean(self):
+    def clean(self, clean_albedo=True):
         self.depthmaps = []
         # self.alphamaps = []
         self.rgbmaps = []
         self.normals = []
+        if clean_albedo or getattr(self, 'albedos', None) is None:
+            self.albedos = []
         self.depth_normals = []
         self.viewpoint_stack = []
 
@@ -153,7 +155,8 @@ class GaussianExtractor(object):
             normal = torch.nn.functional.normalize((render_pkg['rend_normal'].permute(1, 2, 0) @ viewpoint_cam.view_world_transform[:3, :3].T).permute(2, 0, 1), dim=0)
             depth = render_pkg['surf_depth']
             depth_normal = torch.nn.functional.normalize((render_pkg['surf_normal'].permute(1, 2, 0) @ viewpoint_cam.view_world_transform[:3, :3].T).permute(2, 0, 1), dim=0)
-            self.rgbmaps.append(rgb.cpu())
+            self.albedos.append(rgb.cpu())
+            # self.rgbmaps.append(rgb.cpu())
             self.depthmaps.append(depth.cpu())
             # self.alphamaps.append(alpha.cpu())
             self.normals.append(normal.cpu())
@@ -252,11 +255,11 @@ class GaussianExtractor(object):
             self.viewpoint_stack.append(novel_view)
         
     @torch.no_grad()
-    def reconstructionGI(self, viewpoint_stack, ls, pipe, background, num_walks):
+    def reconstructionGI(self, viewpoint_stack, ls, pipe, background, num_walks, clean_albedo=False):
         """
         reconstruct radiance field given cameras
         """
-        self.clean()
+        self.clean(clean_albedo=clean_albedo)
         self.viewpoint_stack = viewpoint_stack
         for i, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="reconstruct radiance fields"):
             render_pkg = renderGI(viewpoint_cam, self.gaussians, ls.from_camera_if_possible(viewpoint_cam), pipe, background, override_solver_settings={"num_walks": num_walks})
@@ -437,17 +440,26 @@ class GaussianExtractor(object):
     def export_image(self, path):
         render_path = os.path.join(path, "renders")
         gts_path = os.path.join(path, "gt")
+        albedo_path = os.path.join(path, "albedos")
+        gts_albedo_path = os.path.join(path, "gt_albedos")
         vis_path = os.path.join(path, "vis")
         # mask_path = os.path.join(path, "mask")
         os.makedirs(render_path, exist_ok=True)
         os.makedirs(vis_path, exist_ok=True)
         os.makedirs(gts_path, exist_ok=True)
         # os.makedirs(mask_path, exist_ok=True)
+        if len(self.albedos) > 0:
+            assert len(self.albedos) == len(self.rgbmaps)
+            os.makedirs(albedo_path, exist_ok=True)
         for idx, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="export images"):
             if viewpoint_cam.exr_image is not None:
                 gt = viewpoint_cam.exr_image[0:3, :, :].clamp(0., 1.)
             else:
                 gt = viewpoint_cam.original_image.clamp(0., 1.)
+            
+            if getattr(viewpoint_cam, 'original_albedo_image', None) is not None:
+                os.makedirs(gts_albedo_path, exist_ok=True)
+                save_img_u8(viewpoint_cam.original_albedo_image.clamp(0., 1.).permute(1,2,0).cpu().numpy(), os.path.join(gts_albedo_path, '{0:05d}'.format(idx) + ".png"))
             
             rgbmap = self.rgbmaps[idx]
             # We apply masking to all baselines
@@ -456,6 +468,7 @@ class GaussianExtractor(object):
             
             save_img_u8(gt.permute(1,2,0).cpu().numpy(), os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
             save_img_u8(rgbmap.clamp(0., 1.).permute(1,2,0).cpu().numpy(), os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+            if len(self.albedos) > 0: save_img_u8(self.albedos[idx].clamp(0., 1.).permute(1,2,0).cpu().numpy(), os.path.join(albedo_path, '{0:05d}'.format(idx) + ".png"))
 
             # if viewpoint_cam.gt_alpha_mask is not None:
             #     save_img_u8(viewpoint_cam.gt_alpha_mask.squeeze().cpu().numpy(), os.path.join(mask_path, '{0:05d}'.format(idx) + ".png"))

@@ -24,7 +24,7 @@ import numpy as np
 from scene import *
 from dnnlib import EasyDict
 from gaussian_renderer import *
-
+from PIL import Image
 from scipy.spatial import cKDTree as KDTree
 from arguments import ModelParams, PipelineParams, get_combined_args
 from utils.mesh_utils import GaussianExtractor, to_cam_open3d, post_process_mesh
@@ -101,26 +101,103 @@ if __name__ == "__main__":
     if not args.skip_train:
         print("export training images ...")
         os.makedirs(train_dir, exist_ok=True)
-        gaussExtractor.reconstructionGI(scene.getTrainCameras(), light_sources, pipe, background, args.num_walks)
+        views = scene.getTrainCameras()
+        if 'TensoIRSynthetic' in dataset.source_path:
+            for view in views:
+                view.original_albedo_image = torch.from_numpy(
+                    np.array(Image.open(view.image_path.replace("rgba.png", f"albedo.png")))
+                ).to(torch.float32).cuda().permute(2, 0, 1)[:3] / 255.
+        elif 'Synthetic4Relight' in dataset.source_path:
+            for view in views:
+                image = torch.from_numpy(
+                    np.array(Image.open(view.image_path.replace("rgba.png", f"albedo.png")))
+                ).to(torch.float32).cuda().permute(2, 0, 1) / 255.
+                view.original_albedo_image = image[:3] * image[3:]
+        gaussExtractor.reconstruction(views)
+        gaussExtractor.reconstructionGI(views, light_sources, pipe, background, args.num_walks)
         gaussExtractor.export_image(train_dir)
     
     if (not args.skip_test) and (len(scene.getTestCameras()) > 0):
         print("export rendered testing images ...")
         os.makedirs(test_dir, exist_ok=True)
-        gaussExtractor.reconstructionGI(scene.getTestCameras(), light_sources, pipe, background, args.num_walks)
+        views = scene.getTestCameras()
+        if 'TensoIRSynthetic' in dataset.source_path:
+            for view in views:
+                view.original_albedo_image = torch.from_numpy(
+                    np.array(Image.open(view.image_path.replace("rgba.png", f"albedo.png")))
+                ).to(torch.float32).cuda().permute(2, 0, 1)[:3] / 255.
+        elif 'Synthetic4Relight' in dataset.source_path:
+            for view in views:
+                image = torch.from_numpy(
+                    np.array(Image.open(view.image_path.replace("rgba.png", f"albedo.png")))
+                ).to(torch.float32).cuda().permute(2, 0, 1) / 255.
+                view.original_albedo_image = image[:3] * image[3:]
+        gaussExtractor.reconstruction(views)
+        gaussExtractor.reconstructionGI(views, light_sources, pipe, background, args.num_walks)
         gaussExtractor.export_image(test_dir)
     
-    if (not args.skip_novel) and 'Stanford-ORB' in dataset.source_path and os.path.exists(os.path.join(dataset.source_path, 'transforms_novel.json')):
-        print("export rendered novel images ...")
-        os.makedirs(novel_dir, exist_ok=True)
-        with open(os.path.join(dataset.source_path, 'transforms_novel.json'), 'r') as f:
-            transforms_novel = json.load(f)['frames']
-        blender_HDR_path = os.path.abspath(os.path.join(dataset.source_path, ".."))
-        gt_env_map_path = blender_HDR_path.replace("blender_HDR", "ground_truth")
-        assert os.path.exists(blender_HDR_path)
-        assert os.path.exists(gt_env_map_path)
-        gaussExtractor.reconstructionGINovel(dataset, transforms_novel, blender_HDR_path, gt_env_map_path, pipe, background, args.num_walks)
-        gaussExtractor.export_image(novel_dir)
+    if (not args.skip_novel):
+        if 'Stanford-ORB' in dataset.source_path and os.path.exists(os.path.join(dataset.source_path, 'transforms_novel.json')):
+            print("export rendered novel images ...")
+            os.makedirs(novel_dir, exist_ok=True)
+            with open(os.path.join(dataset.source_path, 'transforms_novel.json'), 'r') as f:
+                transforms_novel = json.load(f)['frames']
+            blender_HDR_path = os.path.abspath(os.path.join(dataset.source_path, ".."))
+            gt_env_map_path = blender_HDR_path.replace("blender_HDR", "ground_truth")
+            assert os.path.exists(blender_HDR_path)
+            assert os.path.exists(gt_env_map_path)
+            gaussExtractor.reconstructionGINovel(dataset, transforms_novel, blender_HDR_path, gt_env_map_path, pipe, background, args.num_walks)
+            gaussExtractor.export_image(novel_dir)
+        
+        if 'TensoIRSynthetic' in dataset.source_path:
+            os.makedirs(novel_dir, exist_ok=True)
+            with open(os.path.join(dataset.source_path, 'transforms_test.json'), 'r') as f:
+                transforms_test = json.load(f)['frames']
+            blender_HDR_path = os.path.abspath(os.path.join(dataset.source_path, "..", "Environment_Maps", "high_res_envmaps_1k"))
+            assert os.path.exists(blender_HDR_path)
+            test_cameras = scene.getTestCameras()
+            
+            for blender_HDR_name in ["bridge", "city", "fireplace", "forest", "night", "sunset"]:
+                print(f"Dealing with Environment map {blender_HDR_name} ...")
+                for view in test_cameras:
+                    view.original_image = torch.from_numpy(
+                        np.array(Image.open(view.image_path.replace("rgba.png", f"rgba_{blender_HDR_name}.png")))
+                    ).to(torch.float32).cuda().permute(2, 0, 1)[:3] / 255.
+                    view.original_albedo_image = None
+                out_dir = os.path.join(novel_dir, blender_HDR_name)
+                ls = LightModel(dataset)
+                hdr_path = os.path.join(blender_HDR_path, blender_HDR_name + ".hdr")
+                envmap = imageio.v3.imread(hdr_path)
+                envmap = torch.from_numpy(envmap).permute(2, 0, 1).cuda()
+                ls.create_from_env_map(envmap / 20.0, convention='blender')
+                gaussExtractor.reconstructionGI(test_cameras, ls, pipe, background, args.num_walks, clean_albedo=True)
+                gaussExtractor.export_image(out_dir)
+        
+        if 'Synthetic4Relight' in dataset.source_path:
+            os.makedirs(novel_dir, exist_ok=True)
+            with open(os.path.join(dataset.source_path, 'transforms_test.json'), 'r') as f:
+                transforms_test = json.load(f)['frames']
+            blender_HDR_path = os.path.abspath(os.path.join(dataset.source_path, "..", "EnvironmentMap"))
+            assert os.path.exists(blender_HDR_path)
+            test_cameras = scene.getTestCameras()
+            
+            for blender_HDR_name in ["envmap6", "envmap12"]:
+                print(f"Dealing with Environment map {blender_HDR_name} ...")
+                for view in test_cameras:
+                    path = view.image_path.replace("/test", "/test_rli")
+                    image = torch.from_numpy(
+                        np.array(Image.open(os.path.join(os.path.dirname(path), blender_HDR_name + "_" + os.path.basename(path).replace("_rgba.png", ".png"))))
+                    ).to(torch.float32).cuda().permute(2, 0, 1) / 255.
+                    view.original_image = image[:3] * image[3:]
+                    view.original_albedo_image = None
+                out_dir = os.path.join(novel_dir, blender_HDR_name)
+                ls = LightModel(dataset)
+                hdr_path = os.path.join(blender_HDR_path, blender_HDR_name + ".exr")
+                envmap = imageio.v3.imread(hdr_path)
+                envmap = torch.from_numpy(envmap).squeeze().permute(2, 0, 1).cuda()[:3]
+                ls.create_from_env_map(envmap / 20.0, convention='blender')
+                gaussExtractor.reconstructionGI(test_cameras, ls, pipe, background, args.num_walks, clean_albedo=True)
+                gaussExtractor.export_image(out_dir)
     
     if not args.skip_mesh:
         print("export mesh ...")

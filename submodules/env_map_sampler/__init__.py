@@ -17,7 +17,8 @@ def sample_env_map(
     env_map: torch.Tensor, 
     radius: float = 1000, 
     num_samples: int = 16, 
-    opaque_geovalue: float = 6.0
+    opaque_geovalue: float = 6.0, 
+    convention = 'default', 
 ):
     assert len(env_map.shape) == 3
     assert env_map.shape[0] == 1 or env_map.shape[0] == 3
@@ -33,11 +34,20 @@ def sample_env_map(
     theta = u * 2 * torch.pi
     phi = v * torch.pi
 
-    means3D = torch.stack([
-        radius * torch.sin(phi) * torch.cos(theta), 
-        radius * torch.cos(phi), 
-        radius * torch.sin(phi) * torch.sin(theta)
-    ], dim=-1) # (2 * N, N, 3)
+    if convention == 'default':
+        means3D = torch.stack([
+            radius * torch.sin(phi) * torch.cos(theta), 
+            radius * torch.cos(phi), 
+            radius * torch.sin(phi) * torch.sin(theta)
+        ], dim=-1) # (2 * N, N, 3)
+    elif convention == 'blender':
+        means3D = torch.stack([
+            -radius * torch.sin(phi) * torch.cos(theta), 
+            +radius * torch.sin(phi) * torch.sin(theta), 
+            +radius * torch.cos(phi)
+        ], dim=-1) # (2 * N, N, 3)
+    else:
+        raise NotImplementedError()
 
     scales = torch.stack([
         torch.ones_like(theta) * radius / (1.414 * num_samples), 
